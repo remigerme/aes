@@ -246,3 +246,56 @@ def inv_mix_columns(s: State):
             time_b(l[0]) ^ time_d(l[1]) ^ time_9(l[2]) ^ time_e(l[3])
         ]
         s[c] = word_from_bytes(l)
+
+
+
+def xor_state(s: State, t: State) -> State:
+    return [x ^ y for (x, y) in zip(s, t)]
+
+
+# CBC implementation according to https://doi.org/10.6028/NIST.SP.800-38A
+# See section 6.2
+def encrypt_cbc(plain: IO, k: MasterKey, IV: State) -> IO:
+    # PKCS#7 padding
+    n_padding = 4 * Nb - len(plain) % (4 * Nb)
+    assert n_padding < 256 # n_padding must be coded on a single byte
+    plain.extend([n_padding] * n_padding)
+
+    Nk = len(k) 
+    Nr = N_ROUNDS[Nk]
+    w = key_expansion(len(k), k)
+    states = []
+    for i in range(len(plain) // (4 * Nb)):
+        states.append(io_to_state(plain[4 * Nb * i : 4 * Nb * (i + 1)]))
+    
+    for (i, s) in enumerate(states):
+        states[i] = xor_state(s, IV) if i == 0 else xor_state(s, states[i - 1])
+        cipher_state(states[i] , w, Nr)
+
+    ciphertext = [b for s in states for b in state_to_io(s)]
+    return ciphertext
+
+
+def decrypt_cbc(ciphertext: IO, k: MasterKey, IV: State) -> IO:
+    assert len(ciphertext) % (4 * Nb) == 0
+
+    Nk = len(k) 
+    Nr = N_ROUNDS[Nk]
+    w = key_expansion(len(k), k)
+    states = []
+    for i in range(len(ciphertext) // (4 * Nb)):
+        states.append(io_to_state(ciphertext[4 * Nb * i : 4 * Nb * (i + 1)]))
+    
+    previous_cipher_block = IV
+    for (i, s) in enumerate(states):
+        current_cipher_block = list(s)
+        inv_cipher_state(s, w, Nr)
+        states[i] = xor_state(s, previous_cipher_block)
+        previous_cipher_block = current_cipher_block
+
+    plain = [b for s in states for b in state_to_io(s)]
+    # PKCS#7 unpadding
+    n = plain[-1]
+    for _ in range(n):
+        plain.pop()
+    return plain
